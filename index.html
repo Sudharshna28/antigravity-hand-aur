@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Antigravity Hand AR</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --bg:#05050a; --surface:#0e0e18; --border:rgba(255,255,255,0.08); --text:#e8e8f0; --muted:rgba(232,232,240,0.45); --accent:#c8ff00; }
+    body { background:var(--bg); color:var(--text); font-family:'Space Mono',monospace; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:2rem 1rem; gap:1.5rem; }
+    header { text-align:center; }
+    header h1 { font-size:clamp(1.4rem,4vw,2.2rem); font-weight:700; letter-spacing:-0.02em; color:var(--accent); }
+    header p { font-size:0.72rem; color:var(--muted); letter-spacing:0.12em; text-transform:uppercase; margin-top:0.4rem; }
+    .stage { position:relative; width:100%; max-width:700px; border-radius:12px; overflow:hidden; background:#000; border:1px solid var(--border); aspect-ratio:4/3; }
+    video { width:100%; height:100%; object-fit:cover; display:block; transform:scaleX(-1); }
+    canvas { position:absolute; inset:0; width:100%; height:100%; }
+    #splash { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1.2rem; background:rgba(5,5,10,0.88); backdrop-filter:blur(4px); z-index:10; }
+    #splash .icon { font-size:3rem; line-height:1; }
+    #splash p { font-size:0.78rem; color:var(--muted); text-align:center; max-width:260px; line-height:1.7; letter-spacing:0.04em; }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; width:100%; max-width:700px; }
+    button { font-family:'Space Mono',monospace; font-size:0.72rem; letter-spacing:0.1em; text-transform:uppercase; padding:0.55rem 1.2rem; border-radius:6px; border:1px solid var(--border); background:var(--surface); color:var(--text); cursor:pointer; transition:background 0.15s,border-color 0.15s,color 0.15s; }
+    button:hover { background:rgba(200,255,0,0.08); border-color:rgba(200,255,0,0.35); color:var(--accent); }
+    button.primary { background:var(--accent); color:#05050a; border-color:var(--accent); font-weight:700; }
+    button.primary:hover { background:#d4ff22; }
+    .info-row { display:flex; gap:1.5rem; flex-wrap:wrap; justify-content:center; }
+    .badge { font-size:0.68rem; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); }
+    .badge span { color:var(--accent); font-weight:700; }
+    .palette-dots { display:flex; gap:5px; align-items:center; }
+    .palette-dots .dot { width:10px; height:10px; border-radius:50%; }
+    footer { font-size:0.65rem; color:var(--muted); letter-spacing:0.08em; text-align:center; margin-top:auto; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>ANTIGRAVITY ✦</h1>
+  <p>Hand AR · MediaPipe · Canvas</p>
+</header>
+<div class="stage">
+  <video id="vid" autoplay playsinline muted></video>
+  <canvas id="cv"></canvas>
+  <div id="splash">
+    <div class="icon">✋</div>
+    <p>Show both hands for cross-hand beams! Grant camera access to begin.</p>
+    <button class="primary" onclick="startCam()">Start Camera</button>
+  </div>
+</div>
+<div class="controls">
+  <button onclick="cycleMode()">Mode: <span id="modeLabel">Fingertip Rays</span></button>
+  <button onclick="cyclePalette()">Palette: <span id="paletteLabel">Neon</span></button>
+  <button onclick="toggleTrails()">Trails: <span id="trailLabel">Off</span></button>
+</div>
+<div class="info-row">
+  <div class="badge">Hands: <span id="handCount">0</span></div>
+  <div class="badge">FPS: <span id="fpsLabel">—</span></div>
+  <div class="palette-dots" id="paletteDots"></div>
+</div>
+<footer>Open locally in Chrome · Show both hands · M=mode P=palette T=trails</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script>
+const vid    = document.getElementById('vid');
+const cv     = document.getElementById('cv');
+const ctx    = cv.getContext('2d');
+const splash = document.getElementById('splash');
+
+let lastHands=[], camStarted=false, trailsOn=false, modeIdx=0, paletteIdx=0;
+let frameCount=0, lastFpsTime=performance.now();
+
+const MODES=['Fingertip Rays','Web Mesh','Knuckle Aura','All Fingers Star'];
+const PALETTES=[
+  {name:'Neon',  colors:['#ff4ef7','#4ef7ff','#f7ff4e','#ff7b4e','#4eff9b','#c44eff']},
+  {name:'Cyber', colors:['#00f5ff','#ff00c8','#ffee00','#00ff88','#ff5500','#aa00ff']},
+  {name:'Fire',  colors:['#ff6b00','#ff9500','#ffcc00','#ff3300','#ff0066','#ffee88']},
+  {name:'Ice',   colors:['#00cfff','#88eeff','#ccf5ff','#0077ff','#55aaff','#ffffff']},
+  {name:'Mono',  colors:['#ffffff','#cccccc','#aaaaaa','#888888','#c8ff00','#ffffff']},
+];
+
+// All 21 landmark indices
+const ALL_POINTS  = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
+const FINGER_TIPS = [4,8,12,16,20];
+const KNUCKLES    = [0,1,5,9,13,17];
+
+function updateUI() {
+  document.getElementById('modeLabel').textContent    = MODES[modeIdx];
+  document.getElementById('paletteLabel').textContent = PALETTES[paletteIdx].name;
+  document.getElementById('trailLabel').textContent   = trailsOn?'On':'Off';
+  document.getElementById('paletteDots').innerHTML    =
+    PALETTES[paletteIdx].colors.map(c=>`<div class="dot" style="background:${c}"></div>`).join('');
+}
+function cycleMode()    { modeIdx    = (modeIdx+1)    % MODES.length;    updateUI(); }
+function cyclePalette() { paletteIdx = (paletteIdx+1) % PALETTES.length; updateUI(); }
+function toggleTrails() { trailsOn   = !trailsOn; updateUI(); }
+updateUI();
+
+// Mirror x to match CSS-flipped video
+function px(lm, i, w) { return (1 - lm[i].x) * w; }
+function py(lm, i, h) { return lm[i].y * h; }
+function col(i, hi=0) { const c=PALETTES[paletteIdx].colors; return c[(i+hi*3)%c.length]; }
+
+function glowLine(x1,y1,x2,y2,c1,c2,lw=2.5) {
+  if (x1===x2 && y1===y2) return;
+  const g=ctx.createLinearGradient(x1,y1,x2,y2);
+  g.addColorStop(0,c1); g.addColorStop(1,c2);
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+  ctx.strokeStyle=g; ctx.lineWidth=lw;
+  ctx.shadowBlur=14; ctx.shadowColor=c1; ctx.stroke(); ctx.shadowBlur=0;
+}
+function glowDot(x,y,r,color) {
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+  ctx.fillStyle=color; ctx.shadowBlur=20; ctx.shadowColor=color; ctx.fill(); ctx.shadowBlur=0;
+}
+function glowRing(x,y,r,color,lw=2) {
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2);
+  ctx.strokeStyle=color; ctx.lineWidth=lw; ctx.shadowBlur=18; ctx.shadowColor=color;
+  ctx.stroke(); ctx.shadowBlur=0;
+}
+
+// ── Per-hand drawing ──────────────────────────────────────────────────────────
+function drawFingertipRays(lm,w,h,hi) {
+  const tips=FINGER_TIPS.map(i=>({x:px(lm,i,w),y:py(lm,i,h)}));
+  for (let i=0;i<tips.length;i++)
+    for (let j=i+1;j<tips.length;j++)
+      glowLine(tips[i].x,tips[i].y,tips[j].x,tips[j].y,col(i,hi),col(j,hi));
+  tips.forEach((t,i)=>glowDot(t.x,t.y,5,col(i,hi)));
+}
+function drawWebMesh(lm,w,h,hi) {
+  const pts=lm.map(p=>({x:(1-p.x)*w,y:p.y*h}));
+  for (let i=0;i<pts.length;i++) for (let j=i+1;j<pts.length;j++) {
+    const d=Math.hypot(pts[i].x-pts[j].x,pts[i].y-pts[j].y);
+    if (d<110) { ctx.globalAlpha=(1-d/110)*0.9; glowLine(pts[i].x,pts[i].y,pts[j].x,pts[j].y,col(i,hi),col(j,hi),1.2); ctx.globalAlpha=1; }
+  }
+  pts.forEach((p,i)=>glowDot(p.x,p.y,2.5,col(i,hi)));
+}
+function drawKnuckleAura(lm,w,h,hi) {
+  const t=Date.now()*0.003;
+  KNUCKLES.forEach((ki,i)=>{
+    const x=px(lm,ki,w),y=py(lm,ki,h),r=16+Math.sin(t+i*1.1)*8;
+    glowRing(x,y,r,col(i,hi)); glowRing(x,y,r*0.55,col(i+2,hi),1);
+  });
+  const tips=FINGER_TIPS.map(i=>({x:px(lm,i,w),y:py(lm,i,h)}));
+  for (let i=0;i<tips.length-1;i++)
+    glowLine(tips[i].x,tips[i].y,tips[i+1].x,tips[i+1].y,col(i,hi),col(i+1,hi),1.5);
+}
+function drawAllFingersStar(lm,w,h,hi) {
+  const wx=px(lm,0,w),wy=py(lm,0,h);
+  const tips=FINGER_TIPS.map(i=>({x:px(lm,i,w),y:py(lm,i,h)}));
+  tips.forEach((t,i)=>{
+    glowLine(wx,wy,t.x,t.y,col(i,hi),col(i+3,hi),2);
+    glowDot(t.x,t.y,6,col(i,hi));
+    glowDot(px(lm,FINGER_TIPS[i]-2,w),py(lm,FINGER_TIPS[i]-2,h),3.5,col(i+1,hi));
+  });
+  glowDot(wx,wy,8,col(0,hi));
+  for (let i=0;i<tips.length;i++) { const n=(i+1)%tips.length; glowLine(tips[i].x,tips[i].y,tips[n].x,tips[n].y,col(i,hi),col(i+1,hi),1.4); }
+}
+
+// ── CROSS-HAND connections (the new feature) ──────────────────────────────────
+// Connects every fingertip on hand 0 to its matching fingertip on hand 1
+// e.g. thumb↔thumb, index↔index, etc.
+function drawCrossHandBeams(hands, w, h) {
+  if (hands.length < 2) return;
+  const lm0 = hands[0];
+  const lm1 = hands[1];
+
+  // 1. Match each fingertip on hand 0 to the same fingertip on hand 1
+  FINGER_TIPS.forEach((ti, i) => {
+    const x0=px(lm0,ti,w), y0=py(lm0,ti,h);
+    const x1=px(lm1,ti,w), y1=py(lm1,ti,h);
+    const c0=col(i,0), c1=col(i,1);
+    glowLine(x0,y0,x1,y1,c0,c1,3);
+    glowDot(x0,y0,6,c0);
+    glowDot(x1,y1,6,c1);
+  });
+
+  // 2. Also connect ALL 21 points of hand 0 to their matching points on hand 1
+  //    with thinner, subtler lines for a full web look
+  ALL_POINTS.forEach((pi, i) => {
+    const x0=px(lm0,pi,w), y0=py(lm0,pi,h);
+    const x1=px(lm1,pi,w), y1=py(lm1,pi,h);
+    ctx.globalAlpha = 0.35;
+    glowLine(x0,y0,x1,y1,col(i,0),col(i,1),1);
+    ctx.globalAlpha = 1;
+  });
+
+  // 3. Wrist to wrist bright anchor beam
+  const wx0=px(lm0,0,w), wy0=py(lm0,0,h);
+  const wx1=px(lm1,0,w), wy1=py(lm1,0,h);
+  glowLine(wx0,wy0,wx1,wy1,col(0,0),col(0,1),4);
+  glowDot(wx0,wy0,8,col(2,0));
+  glowDot(wx1,wy1,8,col(2,1));
+}
+
+// ── Draw loop ─────────────────────────────────────────────────────────────────
+function drawLoop() {
+  requestAnimationFrame(drawLoop);
+  frameCount++;
+  const now=performance.now();
+  if (now-lastFpsTime>=1000) { document.getElementById('fpsLabel').textContent=frameCount; frameCount=0; lastFpsTime=now; }
+  document.getElementById('handCount').textContent=lastHands.length;
+  if (!lastHands.length) { ctx.clearRect(0,0,cv.width,cv.height); return; }
+  if (trailsOn) { ctx.fillStyle='rgba(5,5,10,0.18)'; ctx.fillRect(0,0,cv.width,cv.height); }
+  else ctx.clearRect(0,0,cv.width,cv.height);
+  const w=cv.width, h=cv.height;
+
+  // Draw per-hand effects
+  lastHands.forEach((lm,hi)=>{
+    if (modeIdx===0) drawFingertipRays(lm,w,h,hi);
+    else if (modeIdx===1) drawWebMesh(lm,w,h,hi);
+    else if (modeIdx===2) drawKnuckleAura(lm,w,h,hi);
+    else drawAllFingersStar(lm,w,h,hi);
+  });
+
+  // Always draw cross-hand beams when both hands are visible
+  drawCrossHandBeams(lastHands, w, h);
+}
+
+// ── Camera + MediaPipe ────────────────────────────────────────────────────────
+function syncSize() {
+  const w=vid.videoWidth||640, h=vid.videoHeight||480;
+  if (cv.width!==w||cv.height!==h) { cv.width=w; cv.height=h; }
+}
+
+function startCam() {
+  if (camStarted) return;
+  camStarted=true;
+  splash.querySelector('p').textContent='Loading MediaPipe…';
+  splash.querySelector('button').disabled=true;
+
+  const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  hands.setOptions({maxNumHands:2, modelComplexity:1, minDetectionConfidence:0.65, minTrackingConfidence:0.5});
+
+  vid.addEventListener('loadedmetadata', syncSize);
+  vid.addEventListener('playing', syncSize);
+  hands.onResults(r=>{ syncSize(); lastHands=r.multiHandLandmarks||[]; });
+
+  const camera=new Camera(vid, {
+    onFrame: async()=>{ syncSize(); await hands.send({image:vid}); },
+    width:640, height:480
+  });
+  camera.start()
+    .then(()=>{ splash.style.display='none'; requestAnimationFrame(drawLoop); })
+    .catch(e=>{ splash.querySelector('p').textContent='Camera error: '+e.message; splash.querySelector('button').disabled=false; camStarted=false; });
+}
+
+document.addEventListener('keydown', e=>{
+  if (e.key==='m') cycleMode();
+  if (e.key==='p') cyclePalette();
+  if (e.key==='t') toggleTrails();
+});
+</script>
+</body>
+</html>

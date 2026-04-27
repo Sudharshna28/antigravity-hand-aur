@@ -1,4 +1,4 @@
-# Antigravity Hand AR ✋✨
+# Antigravity Hand AR 
 
 A real-time hand tracking visualizer using MediaPipe and Canvas.
 
